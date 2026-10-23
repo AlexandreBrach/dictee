@@ -1,0 +1,14 @@
+[Unit]
+Description=Dictée vocale : déclenchement sur appui long de Ctrl gauche
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/dictee-ctrl-listener
+Restart=on-failure
+RestartSec=2
+Environment=DICTEE_HOLD_MS=1000
+
+[Install]
+WantedBy=graphical-session.target

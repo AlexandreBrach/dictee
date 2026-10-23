@@ -1,0 +1,55 @@
+@startuml flux-dictee
+skinparam backgroundColor #1e1e1e
+skinparam defaultFontName sans-serif
+skinparam defaultFontSize 13
+skinparam defaultFontColor #e6e6e6
+skinparam shadowing false
+skinparam rectangle {
+  BorderColor #b8a44a
+  BackgroundColor #2a2a22
+  FontColor #f0e6b8
+  RoundCorner 6
+}
+skinparam card {
+  BorderColor #9d93ff
+  BackgroundColor #33305a
+  FontColor #e8e6ff
+}
+skinparam ArrowColor #cfcfcf
+skinparam ArrowFontColor #e6e6e6
+skinparam ArrowFontSize 12
+top to bottom direction
+skinparam linetype polyline
+skinparam nodesep 14
+skinparam ranksep 26
+hide stereotype
+
+rectangle "dictee-ctrl-listener (service systemd)" as listener {
+  card "XRecord : Ctrl gauche\nmaintenu seul 1000 ms" as key
+  card "XRecord : Ctrl gauche\nrelâché" as release
+}
+
+rectangle "Script dictee" as script {
+  card "dictee start" as start
+  card "dictee stop" as stop
+}
+
+rectangle "Capture audio" as audio {
+  card "ffmpeg -f pulse\nWAV 16 kHz mono" as ffmpeg
+}
+
+rectangle "whisper-server (port 8178)" as server {
+  card "ggml-large-v3-turbo\nGPU (Vulkan / CUDA) ou CPU" as model
+}
+
+card "xdotool type" as xdo
+card "Fenêtre active" as win
+
+key --> start : appui long
+release --> stop : relâchement
+start --> ffmpeg : lance
+stop --> ffmpeg : arrête
+stop --> model : WAV
+model --> xdo : texte
+xdo --> win : frappes clavier
+@enduml

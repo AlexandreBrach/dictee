@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Dictée vocale en mode toggle : un premier appel démarre l'enregistrement,
+# un second l'arrête, transcrit via whisper-server et tape le texte dans la
+# fenêtre active avec xdotool.
+set -u
+
+WHISPER_DIR="${WHISPER_DIR:-$HOME/vendor/whisper.cpp}"
+MODEL="${WHISPER_MODEL:-$WHISPER_DIR/models/ggml-large-v3-turbo.bin}"
+LANG_CODE="${WHISPER_LANG:-fr}"
+PORT="${WHISPER_PORT:-8178}"
+THREADS="${WHISPER_THREADS:-8}"
+SOUND_START="${DICTEE_SOUND_START:-/usr/share/sounds/freedesktop/stereo/device-added.oga}"
+SOUND_STOP="${DICTEE_SOUND_STOP:-/usr/share/sounds/freedesktop/stereo/device-removed.oga}"
+IDLE_MIN="${DICTEE_IDLE_MIN:-10}"   # arrêt du serveur après N minutes sans dictée (0 = jamais)
+IDLE_UNIT="dictee-idle"
+
+RUN_DIR="${XDG_RUNTIME_DIR:-/tmp}/dictee"
+mkdir -p "$RUN_DIR"
+REC_PID_FILE="$RUN_DIR/rec.pid"
+SERVER_PID_FILE="$RUN_DIR/server.pid"
+WAV="$RUN_DIR/rec.wav"
+LOG="$RUN_DIR/dictee.log"
+
+# Trace dans le journal uniquement
+log() {
+    echo "$(date '+%H:%M:%S') $1" >> "$LOG"
+}
+
+# Journal + popup : réservé aux erreurs
+alert() {
+    if command -v kdialog >/dev/null 2>&1; then
+        kdialog --title "Dictée" --passivepopup "$1" "${2:-4}" >/dev/null 2>&1 &
+    fi
+    log "$1"
+}
+
+play_sound() {
+    [ -n "$1" ] && [ -f "$1" ] && command -v paplay >/dev/null 2>&1 || return 0
+    paplay "$1" >/dev/null 2>&1 &
+}
+
+server_alive() {
+    curl -s -o /dev/null -m 1 "http://127.0.0.1:$PORT/" 2>/dev/null
+}
+
+# (Ré)arme le minuteur d'arrêt du serveur pour inactivité
+arm_idle_timer() {
+    command -v systemd-run >/dev/null 2>&1 || return 0
+    systemctl --user stop "$IDLE_UNIT.timer" "$IDLE_UNIT.service" >/dev/null 2>&1
+    [ "$IDLE_MIN" -gt 0 ] 2>/dev/null || return 0
+    systemd-run --user --quiet --unit="$IDLE_UNIT" \
+        --on-active="${IDLE_MIN}min" --timer-property=AccuracySec=1s \
+        "$0" kill-server
+}
+
+ensure_server() {
+    server_alive && return 0
+    log "Démarrage de whisper-server…"
+    nohup "$WHISPER_DIR/build/bin/whisper-server" \
+        -m "$MODEL" -l "$LANG_CODE" -t "$THREADS" \
+        --host 127.0.0.1 --port "$PORT" \
+        >> "$LOG" 2>&1 &
+    echo $! > "$SERVER_PID_FILE"
+    for _ in $(seq 1 60); do
+        server_alive && return 0
+        sleep 0.5
+    done
+    alert "whisper-server n'a pas démarré (voir $LOG)" 5
+    return 1
+}
+
+start_recording() {
+    rm -f "$WAV"
+    play_sound "$SOUND_START"
+    ffmpeg -y -loglevel error -f pulse -i default \
+        -ar 16000 -ac 1 -c:a pcm_s16le "$WAV" >> "$LOG" 2>&1 &
+    echo $! > "$REC_PID_FILE"
+    log "Enregistrement…"
+    # Chargement du modèle en parallèle pendant que l'utilisateur parle
+    ensure_server >/dev/null 2>&1 &
+}
+
+stop_and_transcribe() {
+    local pid
+    pid=$(cat "$REC_PID_FILE")
+    rm -f "$REC_PID_FILE"
+    kill -INT "$pid" 2>/dev/null
+    play_sound "$SOUND_STOP"
+    for _ in $(seq 1 20); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill -KILL "$pid" 2>/dev/null
+
+    if [ ! -s "$WAV" ]; then
+        alert "Aucun audio capturé" 3
+        return 1
+    fi
+
+    log "Transcription…"
+    ensure_server || return 1
+
+    local text
+    text=$(curl -s -m 120 "http://127.0.0.1:$PORT/inference" \
+        -F "file=@$WAV" \
+        -F "language=$LANG_CODE" \
+        -F "response_format=text" \
+        -F "no_timestamps=true" \
+        -F "temperature=0.0")
+
+    # Nettoyage : espaces superflus, retours à la ligne, hallucinations sur silence
+    text=$(printf '%s' "$text" | tr '\n' ' ' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]{2,}/ /g')
+    text=$(printf '%s' "$text" | sed -E 's/\[[^]]*\]//g; s/\([^)]*\)//g; s/[[:space:]]+$//')
+
+    if [ -z "$text" ]; then
+        log "Rien de reconnu"
+        return 0
+    fi
+
+    echo "$(date '+%H:%M:%S') >> $text" >> "$LOG"
+    xdotool type --clearmodifiers --delay 5 -- "$text "
+}
+
+finish() {
+    arm_idle_timer
+}
+
+case "${1:-toggle}" in
+    toggle)
+        if [ -f "$REC_PID_FILE" ] && kill -0 "$(cat "$REC_PID_FILE")" 2>/dev/null; then
+            stop_and_transcribe; finish
+        else
+            start_recording
+        fi
+        ;;
+    start)  start_recording ;;
+    stop)   [ -f "$REC_PID_FILE" ] && { stop_and_transcribe; finish; } ;;
+    server) ensure_server && { log "whisper-server prêt sur le port $PORT"; finish; } ;;
+    kill-server)
+        systemctl --user stop "$IDLE_UNIT.timer" >/dev/null 2>&1
+        [ -f "$SERVER_PID_FILE" ] && kill "$(cat "$SERVER_PID_FILE")" 2>/dev/null
+        pkill -f "build/bin/whisper-server.*--port $PORT" 2>/dev/null
+        rm -f "$SERVER_PID_FILE"
+        log "whisper-server arrêté (inactivité ou demande explicite)"
+        ;;
+    status)
+        if [ -f "$REC_PID_FILE" ] && kill -0 "$(cat "$REC_PID_FILE")" 2>/dev/null; then
+            echo "enregistrement en cours"
+        else
+            echo "inactif"
+        fi
+        server_alive && echo "serveur: actif (port $PORT)" || echo "serveur: arrêté"
+        at=$(systemctl --user list-timers "$IDLE_UNIT.timer" --no-legend 2>/dev/null | awk '{print $3}')
+        [ -n "$at" ] && echo "arrêt pour inactivité prévu à $at"
+        true
+        ;;
+    *)
+        echo "usage: dictee [toggle|start|stop|server|kill-server|status]" >&2
+        exit 2
+        ;;
+esac

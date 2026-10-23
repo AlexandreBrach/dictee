@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Dictée en push-to-talk sur Ctrl gauche.
+
+Quand Ctrl gauche est maintenu seul au-delà d'un seuil, lance `dictee start` ;
+au relâchement, lance `dictee stop` (transcription puis frappe du texte).
+
+Écoute les événements clavier bruts via l'extension XRecord (X11, sans
+privilège). Si une autre touche est pressée avant le seuil, c'est un raccourci
+classique (Ctrl+C, ...) et le déclenchement est annulé.
+"""
+import os
+import subprocess
+import sys
+import threading
+
+from Xlib import X, XK, display
+from Xlib.ext import record
+from Xlib.protocol import rq
+
+HOLD_MS = int(os.environ.get("DICTEE_HOLD_MS", "1000"))
+COMMAND = os.environ.get("DICTEE_COMMAND", os.path.expanduser("~/.local/bin/dictee"))
+
+
+class CtrlHoldListener:
+    def __init__(self):
+        self.ctrl_disp = display.Display()
+        self.rec_disp = display.Display()
+        self.ctrl_keycode = self.ctrl_disp.keysym_to_keycode(XK.XK_Control_L)
+        self.timer = None
+        self.ctrl_down = False
+        self.fired = False      # l'appui en cours est consommé (déclenché ou annulé)
+        self.recording = False  # une capture lancée par cet appui est en cours
+        self.lock = threading.Lock()
+
+    def log(self, msg):
+        print(msg, file=sys.stderr, flush=True)
+
+    def run_dictee(self, action):
+        self.log(f"{COMMAND} {action}")
+        subprocess.Popen(
+            [COMMAND, action],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def fire(self):
+        with self.lock:
+            if not self.ctrl_down or self.fired:
+                return
+            self.fired = True
+            self.recording = True
+        self.log(f"appui long Ctrl_L ({HOLD_MS} ms) : début de capture")
+        self.run_dictee("start")
+
+    def cancel_timer(self):
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+
+    def on_press(self, keycode):
+        with self.lock:
+            if keycode == self.ctrl_keycode:
+                if self.ctrl_down:
+                    return  # autorepeat éventuel
+                self.ctrl_down = True
+                self.fired = False
+                self.cancel_timer()
+                self.timer = threading.Timer(HOLD_MS / 1000.0, self.fire)
+                self.timer.daemon = True
+                self.timer.start()
+            elif self.ctrl_down and not self.fired:
+                # Ctrl + autre touche avant le seuil : raccourci classique, on annule
+                self.cancel_timer()
+                self.fired = True
+            # Ctrl + autre touche pendant la capture : ignoré, la capture continue
+
+    def on_release(self, keycode):
+        stop = False
+        with self.lock:
+            if keycode == self.ctrl_keycode:
+                self.ctrl_down = False
+                self.cancel_timer()
+                if self.recording:
+                    self.recording = False
+                    stop = True
+        if stop:
+            self.log("relâchement Ctrl_L : fin de capture, transcription")
+            self.run_dictee("stop")
+
+    def handler(self, reply):
+        if reply.category != record.FromServer or reply.client_swapped:
+            return
+        data = reply.data
+        while len(data):
+            event, data = rq.EventField(None).parse_binary_value(
+                data, self.rec_disp.display, None, None
+            )
+            if event.type == X.KeyPress:
+                self.on_press(event.detail)
+            elif event.type == X.KeyRelease:
+                self.on_release(event.detail)
+
+    def run(self):
+        ctx = self.rec_disp.record_create_context(
+            0,
+            [record.AllClients],
+            [{
+                "core_requests": (0, 0),
+                "core_replies": (0, 0),
+                "ext_requests": (0, 0, 0, 0),
+                "ext_replies": (0, 0, 0, 0),
+                "delivered_events": (0, 0),
+                "device_events": (X.KeyPress, X.KeyRelease),
+                "errors": (0, 0),
+                "client_started": False,
+                "client_died": False,
+            }],
+        )
+        self.log(f"écoute Ctrl_L (keycode {self.ctrl_keycode}), seuil {HOLD_MS} ms")
+        try:
+            self.rec_disp.record_enable_context(ctx, self.handler)
+        finally:
+            self.rec_disp.record_free_context(ctx)
+
+
+if __name__ == "__main__":
+    CtrlHoldListener().run()
