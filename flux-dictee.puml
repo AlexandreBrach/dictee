@@ -27,11 +27,13 @@ hide stereotype
 rectangle "dictee-ctrl-listener (service systemd)" as listener {
   card "XRecord : Ctrl gauche\nmaintenu seul 1000 ms" as key
   card "XRecord : Ctrl gauche\nrelâché" as release
+  card "XRecord : autre touche\npendant la capture" as other
 }
 
 rectangle "Script dictee" as script {
   card "dictee start" as start
   card "dictee stop" as stop
+  card "dictee cancel" as cancel
 }
 
 rectangle "Capture audio" as audio {
@@ -47,8 +49,10 @@ card "Fenêtre active" as win
 
 key --> start : appui long
 release --> stop : relâchement
+other --> cancel : appui
 start --> ffmpeg : lance
 stop --> ffmpeg : arrête
+cancel --> ffmpeg : arrête, WAV supprimé
 stop --> model : WAV
 model --> xdo : texte
 xdo --> win : frappes clavier

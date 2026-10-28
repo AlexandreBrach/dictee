@@ -79,6 +79,7 @@ systemctl --user enable --now dictee-ctrl.service
 | Commande | Effet |
 |---|---|
 | `dictee start` / `dictee stop` | démarre la capture / l'arrête et transcrit (utilisés par l'écouteur Ctrl) |
+| `dictee cancel` | arrête la capture sans transcrire ni taper (utilisé par l'écouteur Ctrl) |
 | `dictee` ou `dictee toggle` | alterne entre les deux états, pour un raccourci clavier classique |
 | `dictee server` | lance le serveur sans enregistrer, pour le préchauffer, et arme le minuteur d'inactivité |
 | `dictee kill-server` | arrête le serveur et le minuteur, libère la mémoire |
@@ -95,6 +96,7 @@ systemctl --user enable --now dictee-ctrl.service
 | `WHISPER_THREADS` | `8` | threads CPU alloués au serveur |
 | `DICTEE_SOUND_START` | `freedesktop/stereo/device-added.oga` | son joué au début de la capture, vide pour désactiver |
 | `DICTEE_SOUND_STOP` | `freedesktop/stereo/device-removed.oga` | son joué à l'arrêt de la capture, vide pour désactiver |
+| `DICTEE_SOUND_CANCEL` | `freedesktop/stereo/dialog-warning.oga` | son joué à l'annulation de la capture, vide pour désactiver |
 | `DICTEE_IDLE_MIN` | `10` | minutes d'inactivité avant l'arrêt du serveur, 0 pour désactiver |
 
 ## 5. Déclenchement par appui long sur Ctrl gauche
@@ -105,16 +107,18 @@ systemctl --user enable --now dictee-ctrl.service
 
 *(5.3)* **La capture démarre pendant l'appui, au bout de 1000 ms, et seulement si Ctrl gauche est resté seul.** À l'appui sur Ctrl gauche, un minuteur d'une seconde démarre. Si une autre touche est pressée avant son échéance, le minuteur est annulé : c'est un raccourci classique. Si Ctrl est relâché avant, idem. Sinon le minuteur exécute `dictee start` sans attendre le relâchement, et le son de début de capture signale qu'on peut parler.
 
-*(5.4)* **Le relâchement de Ctrl arrête la capture et lance la transcription.** L'écouteur exécute alors `dictee stop` : ffmpeg est arrêté, le WAV est envoyé au serveur, et le texte est tapé dans la fenêtre active. Une fois la capture lancée, les autres touches pressées pendant l'appui sont ignorées, la capture continue jusqu'au relâchement. Comme Ctrl est relâché avant la frappe, xdotool tape dans un contexte propre ; l'option `--clearmodifiers` reste utile si un autre modificateur est enfoncé à ce moment-là.
+*(5.4)* **Le relâchement de Ctrl arrête la capture et lance la transcription.** L'écouteur exécute alors `dictee stop` : ffmpeg est arrêté, le WAV est envoyé au serveur, et le texte est tapé dans la fenêtre active. Comme Ctrl est relâché avant la frappe, xdotool tape dans un contexte propre ; l'option `--clearmodifiers` reste utile si un autre modificateur est enfoncé à ce moment-là.
 
-*(5.5)* **L'écouteur a ses propres variables, déclarées dans le fichier de service.**
+*(5.5)* **Une autre touche pressée pendant la capture annule la dictée.** Si l'on tape par exemple `V` alors que Ctrl est maintenu et que la capture a commencé, l'écouteur exécute aussitôt `dictee cancel`, sans attendre le relâchement de Ctrl : ffmpeg est arrêté, un son d'avertissement distinct du son de fin est joué, le WAV est supprimé, rien n'est transcrit ni tapé. Le relâchement de Ctrl qui suit ne déclenche plus rien. C'est la porte de sortie quand on a déclenché la capture sans le vouloir.
+
+*(5.6)* **L'écouteur a ses propres variables, déclarées dans le fichier de service.**
 
 | Variable | Défaut | Rôle |
 |---|---|---|
 | `DICTEE_HOLD_MS` | `1000` | durée d'appui sur Ctrl gauche avant le début de la capture |
-| `DICTEE_COMMAND` | `~/.local/bin/dictee` | chemin du script appelé avec `start` et `stop` |
+| `DICTEE_COMMAND` | `~/.local/bin/dictee` | chemin du script appelé avec `start`, `stop` et `cancel` |
 
-*(5.6)* **Les commandes utiles pour surveiller ou arrêter l'écouteur passent par systemd.**
+*(5.7)* **Les commandes utiles pour surveiller ou arrêter l'écouteur passent par systemd.**
 
 | Commande | Effet |
 |---|---|
@@ -123,7 +127,7 @@ systemctl --user enable --now dictee-ctrl.service
 | `systemctl --user stop dictee-ctrl` | arrêt temporaire |
 | `systemctl --user disable --now dictee-ctrl` | désactivation définitive |
 
-*(5.7)* **Un raccourci clavier classique en mode toggle reste possible en complément.** Dans les réglages de raccourcis du bureau, ajouter une commande personnalisée qui lance `dictee`, puis lui attribuer une touche libre. Le même raccourci démarre puis arrête la dictée.
+*(5.8)* **Un raccourci clavier classique en mode toggle reste possible en complément.** Dans les réglages de raccourcis du bureau, ajouter une commande personnalisée qui lance `dictee`, puis lui attribuer une touche libre. Le même raccourci démarre puis arrête la dictée.
 
 ## 6. Limites et pistes
 

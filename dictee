@@ -11,6 +11,7 @@ PORT="${WHISPER_PORT:-8178}"
 THREADS="${WHISPER_THREADS:-8}"
 SOUND_START="${DICTEE_SOUND_START:-/usr/share/sounds/freedesktop/stereo/device-added.oga}"
 SOUND_STOP="${DICTEE_SOUND_STOP:-/usr/share/sounds/freedesktop/stereo/device-removed.oga}"
+SOUND_CANCEL="${DICTEE_SOUND_CANCEL:-/usr/share/sounds/freedesktop/stereo/dialog-warning.oga}"
 IDLE_MIN="${DICTEE_IDLE_MIN:-10}"   # arrêt du serveur après N minutes sans dictée (0 = jamais)
 IDLE_UNIT="dictee-idle"
 
@@ -80,17 +81,29 @@ start_recording() {
     ensure_server >/dev/null 2>&1 &
 }
 
-stop_and_transcribe() {
+# Arrête ffmpeg proprement et joue le son passé en argument
+stop_recording() {
     local pid
     pid=$(cat "$REC_PID_FILE")
     rm -f "$REC_PID_FILE"
     kill -INT "$pid" 2>/dev/null
-    play_sound "$SOUND_STOP"
+    play_sound "$1"
     for _ in $(seq 1 20); do
         kill -0 "$pid" 2>/dev/null || break
         sleep 0.1
     done
     kill -KILL "$pid" 2>/dev/null
+}
+
+# Abandonne la capture en cours : rien n'est transcrit ni tapé
+cancel_recording() {
+    stop_recording "$SOUND_CANCEL"
+    rm -f "$WAV"
+    log "Capture abandonnée"
+}
+
+stop_and_transcribe() {
+    stop_recording "$SOUND_STOP"
 
     if [ ! -s "$WAV" ]; then
         alert "Aucun audio capturé" 3
@@ -135,6 +148,7 @@ case "${1:-toggle}" in
         ;;
     start)  start_recording ;;
     stop)   [ -f "$REC_PID_FILE" ] && { stop_and_transcribe; finish; } ;;
+    cancel) [ -f "$REC_PID_FILE" ] && { cancel_recording; finish; } ;;
     server) ensure_server && { log "whisper-server prêt sur le port $PORT"; finish; } ;;
     kill-server)
         systemctl --user stop "$IDLE_UNIT.timer" >/dev/null 2>&1
@@ -155,7 +169,7 @@ case "${1:-toggle}" in
         true
         ;;
     *)
-        echo "usage: dictee [toggle|start|stop|server|kill-server|status]" >&2
+        echo "usage: dictee [toggle|start|stop|cancel|server|kill-server|status]" >&2
         exit 2
         ;;
 esac

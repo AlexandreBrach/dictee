@@ -6,7 +6,9 @@ au relâchement, lance `dictee stop` (transcription puis frappe du texte).
 
 Écoute les événements clavier bruts via l'extension XRecord (X11, sans
 privilège). Si une autre touche est pressée avant le seuil, c'est un raccourci
-classique (Ctrl+C, ...) et le déclenchement est annulé.
+classique (Ctrl+C, ...) et le déclenchement est annulé. Si une autre touche est
+pressée pendant la capture, celle-ci est abandonnée aussitôt (`dictee cancel`) :
+rien n'est transcrit ni tapé.
 """
 import os
 import subprocess
@@ -60,6 +62,7 @@ class CtrlHoldListener:
             self.timer = None
 
     def on_press(self, keycode):
+        cancel = False
         with self.lock:
             if keycode == self.ctrl_keycode:
                 if self.ctrl_down:
@@ -74,7 +77,13 @@ class CtrlHoldListener:
                 # Ctrl + autre touche avant le seuil : raccourci classique, on annule
                 self.cancel_timer()
                 self.fired = True
-            # Ctrl + autre touche pendant la capture : ignoré, la capture continue
+            elif self.recording:
+                # Ctrl + autre touche pendant la capture : abandon immédiat
+                self.recording = False
+                cancel = True
+        if cancel:
+            self.log("autre touche pendant la capture : abandon sans transcription")
+            self.run_dictee("cancel")
 
     def on_release(self, keycode):
         stop = False
